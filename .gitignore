@@ -1,0 +1,5 @@
+data/session.json
+data/cache.json
+data/auto_enroll.json
+__pycache__/
+*.pyc

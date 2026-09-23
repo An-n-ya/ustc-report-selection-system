@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Academic Report Manager</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <div class="brand-mark">AR</div>
+      <div>
+        <h1 data-i18n="app.title">Academic Report Manager</h1>
+        <p data-i18n="app.subtitle">Computer related departments only</p>
+      </div>
+    </div>
+    <div class="session-chip" id="sessionChip">
+      <span class="dot"></span>
+      <span id="sessionChipText" data-i18n="session.disconnected">Disconnected</span>
+    </div>
+  </div>
+</header>
+
+<main class="layout">
+
+  <section class="card session-card">
+    <div class="card-head">
+      <h2 data-i18n="session.title">Account session</h2>
+      <button class="btn ghost" id="toggleSession" data-i18n="session.reconnect">Reconnect</button>
+    </div>
+    <div class="session-body" id="sessionBody">
+      <label class="field-label" for="cookieInput" data-i18n="session.cookieLabel">Session cookie</label>
+      <textarea id="cookieInput" rows="3" spellcheck="false"
+                data-i18n-placeholder="session.cookiePlaceholder"
+                placeholder="Paste the Cookie header value from DevTools"></textarea>
+      <p class="hint" data-i18n="session.help">How to get it.</p>
+      <p class="hint muted" data-i18n="session.privacy">Stored locally only.</p>
+      <div class="row">
+        <button class="btn primary" id="connectBtn" data-i18n="session.connect">Connect</button>
+        <button class="btn danger ghost" id="disconnectBtn" data-i18n="session.disconnect">Disconnect</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="stats" id="stats">
+    <div class="stat"><span class="stat-value" id="statCredits">--</span><span class="stat-label" data-i18n="stats.credits">Credits</span></div>
+    <div class="stat"><span class="stat-value" id="statAvailable">--</span><span class="stat-label" data-i18n="stats.available">Available</span></div>
+    <div class="stat"><span class="stat-value" id="statSelected">--</span><span class="stat-label" data-i18n="stats.selected">Selected</span></div>
+    <div class="stat"><span class="stat-value" id="statDepts">--</span><span class="stat-label" data-i18n="stats.depts">Departments</span></div>
+  </section>
+
+  <section class="card panel">
+    <div class="card-head">
+      <h2 data-i18n="auto.title">Auto enroll</h2>
+      <label class="checkbox auto-toggle">
+        <input type="checkbox" id="autoEnabled">
+        <span data-i18n="auto.enable">Enable</span>
+      </label>
+    </div>
+    <p class="hint" data-i18n="auto.help">Runs on a timer and selects open reports for you.</p>
+    <div class="auto-grid">
+      <div class="filter-item">
+        <label class="field-label" for="autoTarget" data-i18n="auto.target">Stop at (reports)</label>
+        <input type="number" id="autoTarget" min="1" max="200" step="1">
+      </div>
+      <div class="filter-item">
+        <label class="field-label" for="autoInterval" data-i18n="auto.interval">Every (minutes)</label>
+        <input type="number" id="autoInterval" min="1" max="1440" step="1">
+      </div>
+      <div class="filter-item auto-actions">
+        <button class="btn ghost" id="autoRun" data-i18n="auto.runNow">Run one pass now</button>
+        <button class="btn ghost" id="autoClear" data-i18n="auto.clearLog">Clear log</button>
+      </div>
+    </div>
+    <p class="auto-status" id="autoStatus"></p>
+    <div class="auto-log" id="autoLog"></div>
+  </section>
+
+  <section class="card panel">
+    <div class="panel-head">
+      <div class="tabs" id="tabs">
+        <button class="tab active" data-scope="available" data-i18n="nav.available">Available</button>
+        <button class="tab" data-scope="selected" data-i18n="nav.selected">Selected</button>
+      </div>
+      <div class="panel-tools">
+        <span class="cache-note" id="cacheNote"></span>
+        <button class="btn ghost" id="refreshBtn" data-i18n="action.refresh">Refresh</button>
+      </div>
+    </div>
+
+    <div class="filters">
+      <div class="filter-item grow">
+        <label class="field-label" for="keyword" data-i18n="filter.keyword">Keyword</label>
+        <input type="search" id="keyword" data-i18n-placeholder="filter.keywordPlaceholder"
+               placeholder="Title / speaker / location">
+      </div>
+
+      <div class="filter-item">
+        <label class="field-label" data-i18n="filter.dept">Department</label>
+        <details class="multiselect" id="deptSelect">
+          <summary><span id="deptSummary" data-i18n="filter.deptAll">All computer departments</span></summary>
+          <div class="multiselect-menu">
+            <div class="multiselect-actions">
+              <button type="button" class="link" id="deptAll" data-i18n="filter.deptAll">All</button>
+              <button type="button" class="link" id="deptNone" data-i18n="filter.reset">Clear</button>
+            </div>
+            <div id="deptList" class="dept-list"></div>
+          </div>
+        </details>
+      </div>
+
+      <div class="filter-item">
+        <label class="field-label" for="sort" data-i18n="filter.sort">Sort</label>
+        <select id="sort">
+          <option value="time_desc" data-i18n="sort.timeDesc">Time desc</option>
+          <option value="time_asc" data-i18n="sort.timeAsc">Time asc</option>
+          <option value="deadline_asc" data-i18n="sort.deadlineAsc">Deadline asc</option>
+          <option value="title_asc" data-i18n="sort.titleAsc">Title asc</option>
+        </select>
+      </div>
+
+      <div class="filter-item checkbox-item">
+        <label class="checkbox"><input type="checkbox" id="onlyOpen"><span data-i18n="filter.onlyOpen">Only selectable</span></label>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="grid">
+        <thead>
+          <tr>
+            <th data-i18n="table.title">Title</th>
+            <th data-i18n="table.speaker">Speaker</th>
+            <th data-i18n="table.dept">Department</th>
+            <th data-i18n="table.time">Report time</th>
+            <th data-i18n="table.deadline">Deadline</th>
+            <th data-i18n="table.capacity">Capacity</th>
+            <th data-i18n="table.status">Status</th>
+            <th data-i18n="table.actions">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="gridBody"></tbody>
+      </table>
+      <div class="empty" id="emptyState"></div>
+    </div>
+
+    <div class="pager">
+      <span id="pageInfo"></span>
+      <div class="pager-buttons">
+        <button class="btn ghost" id="prevPage" data-i18n="action.prev">Prev</button>
+        <button class="btn ghost" id="nextPage" data-i18n="action.next">Next</button>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer" data-i18n="footer.note">Local tool.</footer>
+</main>
+
+<div class="modal-backdrop" id="modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="modalTitle" data-i18n="detail.title">Report detail</h3>
+      <button class="btn ghost" id="modalClose" data-i18n="detail.close">Close</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
