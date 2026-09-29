@@ -17,11 +17,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from auto_enroll import AutoEnroller
+from cookiecloud import (
+    HOST_ENV,
+    PASSWORD_ENV,
+    UUID_ENV,
+    CookieCloudClient,
+    CookieCloudError,
+)
 from notify import ServerChanNotifier
 from session_watch import SessionWatcher
 from ustc_api import (
     ACTION_AVAILABLE,
     COMPUTER_DEPT_CODES,
+    HOST,
     SessionExpiredError,
     UstcApiError,
     UstcReportClient,
@@ -100,10 +108,11 @@ def report_status(item: dict, scope: str) -> str:
 class Store:
     """Holds the upstream session plus an in-memory copy of the report lists."""
 
-    def __init__(self, notifier=None) -> None:
+    def __init__(self, notifier=None, cookiecloud=None) -> None:
         self.lock = threading.RLock()
         self.client = None
         self.notifier = notifier
+        self.cookiecloud = cookiecloud
         self.departments = load_departments()
         self.available = []
         self.selected = []
@@ -229,6 +238,42 @@ class Store:
         if self.notifier:
             self.notifier.mark_healthy()
 
+    # ------------------------------------------------------------- cookiecloud
+
+    def sync_from_cookiecloud(self) -> dict:
+        """Replace the session with the cookies stored in CookieCloud."""
+        if not self.cookiecloud:
+            raise CookieCloudError("CookieCloud is not configured")
+        return self.connect(self.cookiecloud.netscape(HOST))
+
+    def recover_session(self) -> bool:
+        """Try to restore the session from CookieCloud, reporting success."""
+        if not self.cookiecloud:
+            return False
+        try:
+            self.sync_from_cookiecloud()
+            return True
+        except (CookieCloudError, UstcApiError):
+            return False
+
+    def ensure_session(self) -> bool:
+        """Return True once a working session is in place.
+
+        A missing or stale session is refreshed from CookieCloud when that is
+        configured, so a restart heals itself without a manual paste.
+        """
+        if not self.cookiecloud:
+            return self.status()["connected"]
+        try:
+            self.probe()
+            return True
+        except SessionExpiredError:
+            pass
+        except UstcApiError:
+            # A transient upstream problem is no reason to swap the session.
+            return self.status()["connected"]
+        return self.recover_session()
+
     # ------------------------------------------------------------------- cache
 
     def refresh(self) -> dict:
@@ -267,6 +312,9 @@ class Store:
                 "sessionExpired": self.expired_at > 0,
                 "expiredAt": self.expired_at,
                 "expiredReason": self.expired_reason,
+                "cookieCloud": self.cookiecloud.describe()
+                if self.cookiecloud
+                else {"configured": False},
             }
 
     # ------------------------------------------------------------------ queries
@@ -385,10 +433,11 @@ class Store:
             return self.client.detail(bgbm)
 
 
+COOKIECLOUD = CookieCloudClient.from_env()
 NOTIFIER = ServerChanNotifier(NOTIFY_FILE)
-STORE = Store(NOTIFIER)
+STORE = Store(NOTIFIER, COOKIECLOUD)
 AUTO = AutoEnroller(STORE, AUTO_FILE)
-WATCHER = SessionWatcher(STORE, NOTIFIER)
+WATCHER = SessionWatcher(STORE, NOTIFIER, recover=STORE.recover_session)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -490,6 +539,8 @@ class Handler(BaseHTTPRequestHandler):
         except SessionExpiredError as exc:
             STORE.mark_expired(str(exc))
             self._error(str(exc), 401, expired=True)
+        except CookieCloudError as exc:
+            self._error(str(exc), 502)
         except UstcApiError as exc:
             self._error(str(exc), 502)
         except Exception as exc:  # noqa: BLE001 - report unexpected failures to the UI
@@ -512,6 +563,8 @@ class Handler(BaseHTTPRequestHandler):
                     AUTO.configure({"enabled": False})
                 STORE.disconnect()
                 self._json({"ok": True, "status": STORE.status()})
+            elif route == "/api/cookiecloud/sync":
+                self._json({"ok": True, "status": STORE.sync_from_cookiecloud()})
             elif route == "/api/refresh":
                 self._json({"ok": True, "status": STORE.refresh()})
             elif route == "/api/enroll":
@@ -549,6 +602,8 @@ class Handler(BaseHTTPRequestHandler):
         except SessionExpiredError as exc:
             STORE.mark_expired(str(exc))
             self._error(str(exc), 401, expired=True)
+        except CookieCloudError as exc:
+            self._error(str(exc), 502)
         except UstcApiError as exc:
             self._error(str(exc), 502)
         except Exception as exc:  # noqa: BLE001 - report unexpected failures to the UI
@@ -583,6 +638,18 @@ def main() -> None:
         )
     else:
         print("Expiry alerts off, configure data/notify.json to enable them.")
+    if COOKIECLOUD:
+        print("CookieCloud sync on via %s." % COOKIECLOUD.endpoint)
+        print(
+            "Session ready."
+            if STORE.ensure_session()
+            else "No usable session yet; sync CookieCloud from the page."
+        )
+    else:
+        print(
+            "CookieCloud off; set %s, %s and %s to sync automatically."
+            % (HOST_ENV, UUID_ENV, PASSWORD_ENV)
+        )
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()

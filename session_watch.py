@@ -19,13 +19,15 @@ POLL_SECONDS = 30
 class SessionWatcher:
     """Periodically probes the upstream session and reports an expiry once."""
 
-    def __init__(self, store, notifier) -> None:
+    def __init__(self, store, notifier, recover=None) -> None:
         self.store = store
         self.notifier = notifier
+        self.recover = recover
         self.lock = threading.RLock()
         self.last_check = 0.0
         self.last_error = ""
         self.checks = 0
+        self.recoveries = 0
         self._thread = None
         self._stop = threading.Event()
 
@@ -69,6 +71,9 @@ class SessionWatcher:
         except SessionExpiredError as exc:
             with self.lock:
                 self.last_error = ""
+            if self._heal():
+                # A fresh cookie came back before the owner had to be told.
+                return {"ok": True, "recovered": True}
             store.mark_expired(str(exc))
             return {"ok": False, "expired": True, "reason": str(exc)}
         except UstcApiError as exc:
@@ -82,6 +87,19 @@ class SessionWatcher:
             self.last_error = ""
         return {"ok": True}
 
+    def _heal(self) -> bool:
+        """Try the recovery callback, counting a successful refresh."""
+        if not self.recover:
+            return False
+        try:
+            healed = bool(self.recover())
+        except Exception:  # noqa: BLE001 - a failed heal just falls through to the alert
+            healed = False
+        if healed:
+            with self.lock:
+                self.recoveries += 1
+        return healed
+
     def status(self) -> dict:
         with self.lock:
             return {
@@ -89,4 +107,5 @@ class SessionWatcher:
                 "checks": self.checks,
                 "lastError": self.last_error,
                 "intervalMinutes": self.notifier.check_interval_minutes,
+                "recoveries": self.recoveries,
             }

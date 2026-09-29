@@ -165,6 +165,9 @@ textarea:focus, input:focus, select:focus {
 
 .row { display: flex; gap: 10px; flex-wrap: wrap; }
 
+.cookiecloud-row { align-items: center; margin-top: 10px; }
+.cookiecloud-row .hint { flex: 1 1 auto; min-width: 0; }
+
 .btn {
   border: 1px solid transparent;
   border-radius: 9px;

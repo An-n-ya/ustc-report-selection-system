@@ -19,6 +19,7 @@ report_system/
 ├── ustc_api.py               # 研究生平台接口客户端
 ├── auto_enroll.py            # 自动选课：定时调度 + 选课策略 + 日志
 ├── session_watch.py          # 会话健康检查：定时探测 Cookie 是否失效
+├── cookiecloud.py            # 从自建 CookieCloud 拉取并解密 Cookie
 ├── notify.py                 # Server酱 推送（可单独运行发送测试消息）
 ├── static/
 │   ├── index.html            # 页面结构
@@ -130,6 +131,72 @@ curl -s http://127.0.0.1:8770/api/notify
 页面上也会同步显示：Cookie 失效后顶部状态点变黄并显示「Cookie 已失效」，同时自动展开
 Cookie 输入框，方便直接粘贴新的 Cookie。
 
+如果配置了 CookieCloud（见下节），失效时会**先尝试自动恢复**：探测到 401 后立刻从
+CookieCloud 拉一份新 Cookie 重连，只有恢复失败才推送提醒，所以浏览器插件一直在同步的话
+通常不会收到打扰。
+
+## 从 CookieCloud 自动获取 Cookie
+
+[CookieCloud](https://github.com/easychen/CookieCloud) 是一个自建的 Cookie 同步服务，
+浏览器插件会把加密后的 Cookie 定时上传到你的服务器。配置好之后，本工具可以**不再手动粘贴
+Cookie**，并在会话失效时自动恢复。
+
+配置只通过环境变量注入，**不会写进代码或仓库**：
+
+| 环境变量 | 说明 |
+| --- | --- |
+| `COOKIECLOUD_HOST` | 服务地址，如 `https://cookie.annya.work`（可省略协议，默认补 `https://`） |
+| `COOKIECLOUD_UUID` | 浏览器插件里设置的同步 UUID |
+| `COOKIECLOUD_PASSWORD` | 端到端加密密码 |
+
+三个变量缺任意一个，功能即视为未启用，程序照常运行，只是启动日志会提示未配置。
+
+开发时直接导出即可：
+
+```bash
+export COOKIECLOUD_HOST=https://cookie.annya.work
+export COOKIECLOUD_UUID=annya
+export COOKIECLOUD_PASSWORD=你的密码
+python3 server.py
+```
+
+生产环境用 systemd 的 `EnvironmentFile`，避免密钥出现在命令行或 shell 历史里：
+
+```ini
+# /etc/systemd/system/ustc-report.service.d/env.conf
+[Service]
+EnvironmentFile=/etc/ustc-report/cookiecloud.env
+```
+
+```ini
+# /etc/ustc-report/cookiecloud.env   （权限 600）
+COOKIECLOUD_HOST=https://cookie.annya.work
+COOKIECLOUD_UUID=annya
+COOKIECLOUD_PASSWORD=你的密码
+```
+
+改完执行 `systemctl daemon-reload && systemctl restart ustc-report`。
+
+工作方式：
+
+- 启动时会调用一次 `ensure_session()`：当前会话可用就直接复用，失效或为空则从 CookieCloud
+  拉取并重连，因此**重启即自愈**；
+- 后台监控线程发现 401 时，会先尝试恢复，成功则不计入「失效提醒」；
+- 页面上多了一个「从 CookieCloud 同步」按钮，可以随时手动拉一次；
+- 未配置时按钮为禁用状态，旁边会提示未配置。
+
+解密沿用 CookieCloud 的规则：AES 密钥是 `md5(uuid-password)` 的前 16 个十六进制字符，
+密文可能是 CryptoJS 信封格式（`Salted__` + 盐值，走 EVP_BytesToKey 派生）或固定零 IV 的
+AES-128-CBC。解密交给系统自带的 `openssl` 命令行完成，因此**依旧零第三方 Python 依赖**。
+拉下来的快照会按域名过滤，只保留研究生平台用得上的 Cookie，其余站点不会写入
+`data/session.json`。
+
+排查时可以单独运行该模块，打印快照里有哪些 Cookie：
+
+```bash
+python3 cookiecloud.py yjs1.ustc.edu.cn
+```
+
 ## 覆盖的院系
 
 | 代码 | 院系 |
@@ -161,6 +228,7 @@ Cookie 输入框，方便直接粘贴新的 Cookie。
 | GET | `/api/report?bgbm=` | 单个报告详情 |
 | POST | `/api/connect` | `{"cookies": "..."}` 建立会话并抓取数据 |
 | POST | `/api/disconnect` | 清除会话与缓存 |
+| POST | `/api/cookiecloud/sync` | 从 CookieCloud 拉取 Cookie 并重连（未配置返回 502） |
 | POST | `/api/refresh` | 强制重新抓取 |
 | POST | `/api/enroll` | `{"bgbm": "..."}` 选课 |
 | POST | `/api/drop` | `{"bgbm": "..."}` 退课 |

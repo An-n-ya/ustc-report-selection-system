@@ -118,6 +118,7 @@ function renderSession() {
   el('sessionBody').classList.toggle('collapsed', connected && !expired);
   el('connectBtn').disabled = false;
   el('refreshBtn').disabled = !connected || expired;
+  renderCookieCloud(status);
 
   if (expired && !state.expiredToasted) {
     state.expiredToasted = true;
@@ -125,6 +126,15 @@ function renderSession() {
   } else if (!expired) {
     state.expiredToasted = false;
   }
+}
+
+function renderCookieCloud(status) {
+  const cloud = (status && status.cookieCloud) || {};
+  const configured = !!cloud.configured;
+  el('cookiecloudBtn').disabled = !configured;
+  el('cookiecloudNote').textContent = configured
+    ? t('session.cloudReady', { url: cloud.endpoint || '' })
+    : t('session.cloudOff');
 }
 
 function renderStats() {
@@ -166,6 +176,30 @@ async function connect() {
   } finally {
     button.disabled = false;
     button.textContent = t('session.connect');
+  }
+}
+
+async function syncCookieCloud() {
+  const button = el('cookiecloudBtn');
+  button.disabled = true;
+  button.textContent = t('empty.loading');
+  try {
+    const payload = await postJson('/api/cookiecloud/sync');
+    state.status = payload.status;
+    el('cookieInput').value = '';
+    toast(
+      t('session.cloudSynced') + ' · ' + t('toast.loaded', { n: payload.status.availableCount }),
+      'success'
+    );
+    renderSession();
+    renderStats();
+    await loadDepartments();
+    await loadReports();
+  } catch (error) {
+    toast(t('toast.failed') + ': ' + error.message, 'error');
+  } finally {
+    button.textContent = t('session.syncCloud');
+    renderSession();
   }
 }
 
@@ -635,6 +669,7 @@ async function runAutoNow() {
 function bindEvents() {
   el('connectBtn').addEventListener('click', connect);
   el('disconnectBtn').addEventListener('click', disconnect);
+  el('cookiecloudBtn').addEventListener('click', syncCookieCloud);
   el('refreshBtn').addEventListener('click', refresh);
   el('toggleSession').addEventListener('click', () => {
     el('sessionBody').classList.toggle('collapsed');
