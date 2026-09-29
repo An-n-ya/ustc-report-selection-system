@@ -97,5 +97,11 @@
   "auto.kind.idle": "空闲",
   "auto.kind.error": "错误",
   "auto.kind.summary": "汇总",
+  "session.expiredShort": "Cookie 已失效",
+  "session.expiredHint": "Cookie 已失效，请在下方粘贴新的 Cookie 后点击「连接」。",
+  "notify.expiredTitle": "学术报告系统：Cookie 已失效",
+  "notify.expiredBody": "**检测时间**：{time}\n\n**失效原因**：{reason}\n\n请打开 {url} 重新粘贴 Cookie 并点击「连接」。\n\n> 每次失效只推送一条，重新连接成功后自动重置。",
+  "notify.testTitle": "学术报告系统：推送测试",
+  "notify.testBody": "收到这条消息说明 Server酱 推送配置正常，Cookie 失效时会通过这里提醒你。",
   "footer.note": "数据来源于研究生平台，仅作本地查询与管理使用。"
 }

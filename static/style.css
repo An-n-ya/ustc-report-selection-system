@@ -90,6 +90,8 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 
 .session-chip.online .dot { background: #6ef0b6; }
 
+.session-chip.warn .dot { background: #ffd166; }
+
 /* ------------------------------------------------------------------ layout */
 
 .layout {

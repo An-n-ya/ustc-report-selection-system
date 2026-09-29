@@ -13,6 +13,7 @@ const state = {
   pageSize: 20,
   result: null,
   auto: null,
+  expiredToasted: false,
 };
 
 const DETAIL_FIELDS = [
@@ -103,12 +104,27 @@ function applyI18n() {
 /* ----------------------------------------------------------------- session */
 
 function renderSession() {
-  const connected = !!(state.status && state.status.connected);
-  el('sessionChip').classList.toggle('online', connected);
-  el('sessionChipText').textContent = t(connected ? 'session.connected' : 'session.disconnected');
-  el('sessionBody').classList.toggle('collapsed', connected);
+  const status = state.status || {};
+  const connected = !!status.connected;
+  const expired = !!status.sessionExpired;
+
+  el('sessionChip').classList.toggle('online', connected && !expired);
+  el('sessionChip').classList.toggle('warn', expired);
+  el('sessionChipText').textContent = expired
+    ? t('session.expiredShort')
+    : t(connected ? 'session.connected' : 'session.disconnected');
+
+  // Keep the cookie box open so a fresh cookie can be pasted straight away.
+  el('sessionBody').classList.toggle('collapsed', connected && !expired);
   el('connectBtn').disabled = false;
-  el('refreshBtn').disabled = !connected;
+  el('refreshBtn').disabled = !connected || expired;
+
+  if (expired && !state.expiredToasted) {
+    state.expiredToasted = true;
+    toast(t('session.expiredHint'), 'error');
+  } else if (!expired) {
+    state.expiredToasted = false;
+  }
 }
 
 function renderStats() {

@@ -17,6 +17,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from auto_enroll import AutoEnroller
+from notify import ServerChanNotifier
+from session_watch import SessionWatcher
 from ustc_api import (
     ACTION_AVAILABLE,
     COMPUTER_DEPT_CODES,
@@ -32,6 +34,7 @@ I18N_DIR = os.path.join(ROOT, "i18n")
 SESSION_FILE = os.path.join(DATA_DIR, "session.json")
 CACHE_FILE = os.path.join(DATA_DIR, "cache.json")
 AUTO_FILE = os.path.join(DATA_DIR, "auto_enroll.json")
+NOTIFY_FILE = os.path.join(DATA_DIR, "notify.json")
 
 CACHE_TTL_SECONDS = 30 * 60
 COMPUTER_DEPT_SET = frozenset(COMPUTER_DEPT_CODES)
@@ -97,15 +100,18 @@ def report_status(item: dict, scope: str) -> str:
 class Store:
     """Holds the upstream session plus an in-memory copy of the report lists."""
 
-    def __init__(self) -> None:
+    def __init__(self, notifier=None) -> None:
         self.lock = threading.RLock()
         self.client = None
+        self.notifier = notifier
         self.departments = load_departments()
         self.available = []
         self.selected = []
         self.credits = None
         self.fetched_at = 0.0
         self.cookie_hint = ""
+        self.expired_at = 0.0
+        self.expired_reason = ""
         self.load_session()
         self.load_cache()
 
@@ -166,6 +172,8 @@ class Store:
             client.credits()
             self.client = client
             self.cookie_hint = ", ".join(client.cookie_names())
+            self.expired_at = 0.0
+            self.expired_reason = ""
             try:
                 status = self.refresh()
             except Exception:
@@ -173,7 +181,8 @@ class Store:
                 self.cookie_hint = ""
                 raise
             self.save_session()
-            return status
+        self.mark_healthy()
+        return status
 
     def disconnect(self) -> None:
         with self.lock:
@@ -183,6 +192,8 @@ class Store:
             self.selected = []
             self.credits = None
             self.fetched_at = 0.0
+            self.expired_at = 0.0
+            self.expired_reason = ""
             try:
                 os.remove(SESSION_FILE)
             except OSError:
@@ -191,6 +202,32 @@ class Store:
                 os.remove(CACHE_FILE)
             except OSError:
                 pass
+        self.mark_healthy()
+
+    # ------------------------------------------------------- session health
+
+    def probe(self) -> None:
+        """Make one cheap authenticated call, raising if the cookie is stale."""
+        with self.lock:
+            if not self.client:
+                raise SessionExpiredError("no active session")
+            self.client.credits()
+
+    def mark_expired(self, reason: str) -> None:
+        """Remember that the cookie was rejected and alert the owner once."""
+        with self.lock:
+            if self.expired_at == 0.0:
+                self.expired_at = time.time()
+            self.expired_reason = reason
+        if self.notifier:
+            self.notifier.alert_expired(reason)
+
+    def mark_healthy(self) -> None:
+        with self.lock:
+            self.expired_at = 0.0
+            self.expired_reason = ""
+        if self.notifier:
+            self.notifier.mark_healthy()
 
     # ------------------------------------------------------------------- cache
 
@@ -227,6 +264,9 @@ class Store:
                 "availableCount": len(self.available),
                 "selectedCount": len(self.selected),
                 "deptCount": len(COMPUTER_DEPT_CODES),
+                "sessionExpired": self.expired_at > 0,
+                "expiredAt": self.expired_at,
+                "expiredReason": self.expired_reason,
             }
 
     # ------------------------------------------------------------------ queries
@@ -345,8 +385,10 @@ class Store:
             return self.client.detail(bgbm)
 
 
-STORE = Store()
+NOTIFIER = ServerChanNotifier(NOTIFY_FILE)
+STORE = Store(NOTIFIER)
 AUTO = AutoEnroller(STORE, AUTO_FILE)
+WATCHER = SessionWatcher(STORE, NOTIFIER)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -417,6 +459,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "departments": STORE.dept_summary()})
             elif route == "/api/auto":
                 self._json({"ok": True, "auto": AUTO.status()})
+            elif route == "/api/notify":
+                self._json(
+                    {
+                        "ok": True,
+                        "notify": NOTIFIER.status(),
+                        "watcher": WATCHER.status(),
+                    }
+                )
             elif route == "/api/reports":
                 depts = [d for d in (query.get("depts") or "").split(",") if d]
                 result = STORE.query(
@@ -438,6 +488,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._error("not found", 404)
         except SessionExpiredError as exc:
+            STORE.mark_expired(str(exc))
             self._error(str(exc), 401, expired=True)
         except UstcApiError as exc:
             self._error(str(exc), 502)
@@ -496,6 +547,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._error("not found", 404)
         except SessionExpiredError as exc:
+            STORE.mark_expired(str(exc))
             self._error(str(exc), 401, expired=True)
         except UstcApiError as exc:
             self._error(str(exc), 502)
@@ -515,13 +567,22 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="USTC academic report manager")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8770)
     args = parser.parse_args()
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     AUTO.start()
+    WATCHER.start()
     print("Academic report manager running at http://%s:%d" % (args.host, args.port))
+    notify_state = NOTIFIER.status()
+    if notify_state["configured"] and notify_state["enabled"]:
+        print(
+            "Expiry alerts on, checking every %d min."
+            % notify_state["checkIntervalMinutes"]
+        )
+    else:
+        print("Expiry alerts off, configure data/notify.json to enable them.")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
@@ -529,6 +590,7 @@ def main() -> None:
         pass
     finally:
         AUTO.stop()
+        WATCHER.stop()
         server.server_close()
 
 

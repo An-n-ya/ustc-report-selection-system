@@ -18,6 +18,8 @@ report_system/
 ├── server.py                 # HTTP 服务 + 路由 + 缓存
 ├── ustc_api.py               # 研究生平台接口客户端
 ├── auto_enroll.py            # 自动选课：定时调度 + 选课策略 + 日志
+├── session_watch.py          # 会话健康检查：定时探测 Cookie 是否失效
+├── notify.py                 # Server酱 推送（可单独运行发送测试消息）
 ├── static/
 │   ├── index.html            # 页面结构
 │   ├── app.js                # 前端逻辑
@@ -26,9 +28,10 @@ report_system/
 │   ├── departments.json      # 院系代码表（静态数据）
 │   ├── session.json          # 运行时生成：会话 Cookie
 │   ├── cache.json            # 运行时生成：报告缓存
-│   └── auto_enroll.json      # 运行时生成：自动选课设置与日志
+│   ├── auto_enroll.json      # 运行时生成：自动选课设置与日志
+│   └── notify.json           # 运行时生成：推送设置与提醒状态（含 SendKey）
 └── i18n/
-    └── zh.json               # 界面文案
+    └── zh.json               # 界面文案 + 推送文案
 ```
 
 ## 启动
@@ -85,6 +88,47 @@ yjs1.ustc.edu.cn	FALSE	/	FALSE	0	JSESSIONID	AxfZdtbEkLE9...
 Cookie 只保存在本机 `data/session.json`（权限 600），且以 cookies.txt 格式回写，
 保证重启后作用域信息不丢失，不会发往任何第三方。
 连接成功后会把报告列表抓下来缓存，默认 30 分钟内复用缓存，可随时点「刷新数据」强制更新。
+
+## Cookie 过期提醒（Server酱）
+
+Cookie 是有时限的，失效后所有接口都会返回 401。程序会在两个时机发现失效并推送提醒：
+
+- **被动**：任何一次请求（页面操作或自动选课）被上游拒绝时立即提醒；
+- **主动**：`session_watch.py` 后台每 30 分钟做一次轻量探测（调 `getCjNum.do`），
+  这样即使你几天不打开页面、自动选课也没开，Cookie 失效一样会被发现。
+
+提醒通过 [Server酱](https://sct.ftqq.com/) 发送，**每次失效只推送一条**：推送成功后置位，
+直到你重新连接成功才会复位。若推送本身失败（网络问题或 SendKey 失效），不会置位，
+下一轮探测会重试，因此不会因为一次偶发失败而漏掉提醒。
+
+配置写在 `data/notify.json`（首次运行自动生成，权限 600）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `sendkey` | Server酱 SendKey，形如 `SCT...`；也可用环境变量 `SERVERCHAN_SENDKEY` 覆盖 |
+| `enabled` | 是否发送推送，默认 `true` |
+| `checkIntervalMinutes` | 后台探测间隔（分钟），默认 `30`，取值 5–1440 |
+| `siteUrl` | 推送正文里附上的地址，默认 `https://report.annya.work/` |
+
+该文件已加入 `.gitignore`，SendKey 不会被提交到仓库。推送文案（标题与正文模板）放在
+`i18n/zh.json` 的 `notify.*` 键下，正文支持 Markdown，可用 `{time}`、`{reason}`、`{url}`
+三个占位符。
+
+手动发一条测试消息：
+
+```bash
+python3 notify.py                      # 用 data/notify.json 里的 SendKey
+python3 notify.py --message "自定义正文"
+```
+
+查看当前状态（是否配置、上次提醒时间、上次错误）：
+
+```bash
+curl -s http://127.0.0.1:8770/api/notify
+```
+
+页面上也会同步显示：Cookie 失效后顶部状态点变黄并显示「Cookie 已失效」，同时自动展开
+Cookie 输入框，方便直接粘贴新的 Cookie。
 
 ## 覆盖的院系
 

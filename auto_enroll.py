@@ -206,6 +206,7 @@ class AutoEnroller:
         try:
             store.refresh()
         except SessionExpiredError as exc:
+            store.mark_expired(str(exc))
             self._pause("session expired: %s" % exc)
             return {"enrolled": 0, "reason": "session expired"}
         except UstcApiError as exc:
@@ -249,6 +250,7 @@ class AutoEnroller:
             try:
                 ok, message = store.enroll(item["bgbm"])
             except SessionExpiredError as exc:
+                store.mark_expired(str(exc))
                 self._pause("session expired mid pass: %s" % exc)
                 break
             except UstcApiError as exc:
