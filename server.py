@@ -432,6 +432,22 @@ class Store:
                 raise SessionExpiredError("no active session")
             return self.client.detail(bgbm)
 
+    def report_title(self, bgbm: str) -> str:
+        """Best effort title lookup across the cached lists."""
+        with self.lock:
+            for item in self.available + self.selected:
+                if item["bgbm"] == bgbm:
+                    return item["title"] or bgbm
+        return bgbm
+
+    def notify_enrolled(self, titles) -> None:
+        """Push one message about freshly taken reports, when alerts are on."""
+        if not self.notifier:
+            return
+        titles = [title for title in titles if title]
+        if titles:
+            self.notifier.alert_enrolled(titles)
+
 
 COOKIECLOUD = CookieCloudClient.from_env()
 NOTIFIER = ServerChanNotifier(NOTIFY_FILE)
@@ -575,6 +591,7 @@ class Handler(BaseHTTPRequestHandler):
                 ok, message = STORE.enroll(bgbm)
                 if ok:
                     STORE.refresh()
+                    STORE.notify_enrolled([STORE.report_title(bgbm)])
                 self._json({"ok": ok, "message": message, "status": STORE.status()})
             elif route == "/api/drop":
                 bgbm = payload.get("bgbm") or ""

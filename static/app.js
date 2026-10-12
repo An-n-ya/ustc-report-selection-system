@@ -523,6 +523,18 @@ async function openDetail(bgbm) {
   body.innerHTML = '';
   el('modalTitle').textContent = report.BGTMZW || t('detail.title');
 
+  const capacity = document.createElement('div');
+  capacity.className = 'detail-capacity';
+  const capLabel = document.createElement('span');
+  capLabel.className = 'detail-capacity-label';
+  capLabel.textContent = t('table.capacity');
+  const capValueEl = document.createElement('span');
+  capValueEl.className = 'detail-capacity-value';
+  capValueEl.textContent = (report.KXRS || '--') + ' / ' + (report.YXRS || '--');
+  capacity.appendChild(capLabel);
+  capacity.appendChild(capValueEl);
+  body.appendChild(capacity);
+
   body.appendChild(detailSection(t('detail.basic'), detailGrid([
     [t('table.title'), report.BGTMZW],
     [t('table.title') + ' (EN)', report.BGTMYW],
@@ -531,7 +543,6 @@ async function openDetail(bgbm) {
     [t('table.location'), report.DD],
     [t('table.time'), formatTime(report.BGSJ)],
     [t('table.deadline'), formatTime(report.JZSJ)],
-    [t('table.capacity'), (report.KXRS || '--') + ' / ' + (report.YXRS || '--')],
   ])));
 
   body.appendChild(detailSection(t('detail.content'), report.BGNR || t('detail.none')));
@@ -563,22 +574,80 @@ function formatClock(seconds) {
   return when.toLocaleString();
 }
 
+function formatHour(hour) {
+  const value = Number(hour);
+  if (Number.isNaN(value)) return '--';
+  return String(value).padStart(2, '0') + ':00';
+}
+
+/* 0 is a meaningful hour, so parseInt cannot be combined with "|| fallback". */
+function clampHour(raw, fallback) {
+  const value = parseInt(raw, 10);
+  if (Number.isNaN(value)) return fallback;
+  return Math.min(24, Math.max(0, value));
+}
+
 function renderAuto(auto) {
   if (!auto) return;
   state.auto = auto;
   el('autoEnabled').checked = !!auto.enabled;
   if (document.activeElement !== el('autoTarget')) el('autoTarget').value = auto.target;
   if (document.activeElement !== el('autoInterval')) el('autoInterval').value = auto.intervalMinutes;
+  if (document.activeElement !== el('autoWindowStart')) el('autoWindowStart').value = auto.windowStartHour;
+  if (document.activeElement !== el('autoWindowEnd')) el('autoWindowEnd').value = auto.windowEndHour;
 
-  const parts = [];
-  parts.push(t(auto.enabled ? 'auto.stateOn' : 'auto.stateOff'));
-  parts.push(t('auto.holding') + ': ' + (state.status && state.status.connected
-    ? state.status.selectedCount + '/' + auto.target
-    : '--'));
-  if (auto.enabled) parts.push(t('auto.nextRun') + ': ' + formatClock(auto.nextRun));
-  if (auto.lastRun) parts.push(t('auto.lastRun') + ': ' + formatClock(auto.lastRun));
-  if (auto.running) parts.push(t('auto.running'));
-  el('autoStatus').textContent = parts.join(' · ');
+  const summary = el('autoSummary');
+  summary.innerHTML = '';
+
+  const connected = state.status && state.status.connected;
+  const metrics = [
+    {
+      label: t('auto.holding'),
+      value: connected ? state.status.selectedCount + '/' + auto.target : '--',
+      strong: true,
+    },
+    {
+      label: t('auto.window'),
+      value: formatHour(auto.windowStartHour) + '-' + formatHour(auto.windowEndHour),
+    },
+    {
+      label: t('auto.nextRun'),
+      value: auto.enabled ? formatClock(auto.nextRun) : '--',
+    },
+    {
+      label: t('auto.lastRun'),
+      value: auto.lastRun ? formatClock(auto.lastRun) : '--',
+    },
+  ];
+  const metricRow = document.createElement('div');
+  metricRow.className = 'auto-metrics';
+  metrics.forEach((metric) => {
+    const tile = document.createElement('div');
+    tile.className = 'auto-metric' + (metric.strong ? ' strong' : '');
+    const value = document.createElement('span');
+    value.className = 'auto-metric-value';
+    value.textContent = metric.value;
+    const label = document.createElement('span');
+    label.className = 'auto-metric-label';
+    label.textContent = metric.label;
+    tile.appendChild(value);
+    tile.appendChild(label);
+    metricRow.appendChild(tile);
+  });
+  summary.appendChild(metricRow);
+
+  const flags = document.createElement('div');
+  flags.className = 'auto-flags';
+  const addFlag = (text, kind) => {
+    const flag = document.createElement('span');
+    flag.className = 'auto-flag' + (kind ? ' ' + kind : '');
+    flag.textContent = text;
+    flags.appendChild(flag);
+  };
+  addFlag(t(auto.enabled ? 'auto.stateOn' : 'auto.stateOff'), auto.enabled ? 'on' : 'off');
+  if (auto.enabled && auto.inWindow === false) addFlag(t('auto.outsideWindow'), 'warn');
+  if (auto.running) addFlag(t('auto.running'), 'run');
+  summary.appendChild(flags);
 
   const log = el('autoLog');
   log.innerHTML = '';
@@ -738,6 +807,18 @@ function bindEvents() {
     const value = Math.min(1440, Math.max(1, parseInt(event.target.value, 10) || 60));
     event.target.value = value;
     saveAuto({ intervalMinutes: value });
+  });
+
+  el('autoWindowStart').addEventListener('change', (event) => {
+    const value = clampHour(event.target.value, 0);
+    event.target.value = value;
+    saveAuto({ windowStartHour: value });
+  });
+
+  el('autoWindowEnd').addEventListener('change', (event) => {
+    const value = clampHour(event.target.value, 24);
+    event.target.value = value;
+    saveAuto({ windowEndHour: value });
   });
 
   el('autoRun').addEventListener('click', runAutoNow);

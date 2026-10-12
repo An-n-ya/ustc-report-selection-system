@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""ServerChan push notifications for session expiry alerts.
+"""ServerChan push notifications for session expiry and enrolment alerts.
 
 The tool only touches the school portal when the browser or the auto enrol
 worker asks it to, so a stale cookie can go unnoticed for days. This module
 sends one push notification the first time the stored cookie stops being
 accepted, and then stays quiet until the session is healthy again.
+
+Enrolment alerts work the other way round: every report that is actually taken
+is worth a message, so one push is sent per batch. The auto enrol worker hands
+over a whole pass at once, which keeps a burst of sign ups from burning through
+the daily ServerChan quota.
 
 Credentials and de-duplication state share a single JSON file under data/, so
 restarting the process does not turn one expiry into a stream of repeats.
@@ -67,6 +72,8 @@ class ServerChanNotifier:
         self.last_alert_at = 0.0
         self.last_result = ""
         self.last_error = ""
+        self.last_enroll_at = 0.0
+        self.last_enroll_result = ""
         self._sending = False
         self.load()
 
@@ -88,6 +95,8 @@ class ServerChanNotifier:
         self.last_alert_at = float(payload.get("lastAlertAt") or 0)
         self.last_result = payload.get("lastResult") or ""
         self.last_error = payload.get("lastError") or ""
+        self.last_enroll_at = float(payload.get("lastEnrollAt") or 0)
+        self.last_enroll_result = payload.get("lastEnrollResult") or ""
         override = (os.environ.get(SENDKEY_ENV) or "").strip()
         if override:
             self.sendkey = override
@@ -102,6 +111,8 @@ class ServerChanNotifier:
             "lastAlertAt": self.last_alert_at,
             "lastResult": self.last_result,
             "lastError": self.last_error,
+            "lastEnrollAt": self.last_enroll_at,
+            "lastEnrollResult": self.last_enroll_result,
         }
         directory = os.path.dirname(self.path)
         if directory:
@@ -210,6 +221,47 @@ class ServerChanNotifier:
             self.last_error = ""
             self.save()
 
+    # ------------------------------------------------------------- enrolments
+
+    def alert_enrolled(self, titles) -> bool:
+        """Queue one push naming the reports that were just taken.
+
+        Unlike the expiry alert this is never de-duplicated: every batch of
+        successful sign ups deserves a message. Callers pass a whole pass at
+        once so a burst of enrolments costs a single ServerChan message.
+        """
+        titles = [str(title).strip() for title in titles if str(title).strip()]
+        if not titles:
+            return False
+        with self.lock:
+            if not self.enabled or not self.sendkey:
+                return False
+        threading.Thread(
+            target=self._enrolled_worker,
+            args=(titles,),
+            name="notify-enrolled",
+            daemon=True,
+        ).start()
+        return True
+
+    def _enrolled_worker(self, titles) -> None:
+        texts = _texts()
+        title = texts.get("notify.enrollTitle") or "Reports enrolled"
+        template = texts.get("notify.enrollBody") or (
+            "Enrolled {count} report(s) at {time}.\n\n{items}\n\nOpen {url}."
+        )
+        body = template.format(
+            time=_stamp(),
+            count=len(titles),
+            items="\n".join("- %s" % item for item in titles),
+            url=self.site_url,
+        )
+        ok, detail = self.send(title, body)
+        with self.lock:
+            self.last_enroll_at = time.time()
+            self.last_enroll_result = detail
+            self.save()
+
     def status(self) -> dict:
         with self.lock:
             return {
@@ -221,6 +273,8 @@ class ServerChanNotifier:
                 "lastAlertAt": self.last_alert_at,
                 "lastResult": self.last_result,
                 "lastError": self.last_error,
+                "lastEnrollAt": self.last_enroll_at,
+                "lastEnrollResult": self.last_enroll_result,
             }
 
 

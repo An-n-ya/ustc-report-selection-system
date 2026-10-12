@@ -7,3 +7,14 @@ __pycache__/
 .env
 env
 cookiecloud.env
+
+# macOS
+.DS_Store
+
+# Local AI-agent tooling (not part of the project)
+.agent/
+.agents/
+.claude/
+.codex/
+.gemini/
+.pi/

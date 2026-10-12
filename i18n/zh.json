@@ -80,6 +80,11 @@
   "auto.help": "开启后按设定的间隔自动查找「状态可选且人数未满」的计算机相关院系报告并替你选课，达到上限即停止。开启后第一次执行在 1 个间隔之后，你也可以点「立即执行一轮」马上跑。",
   "auto.target": "选课上限（门）",
   "auto.interval": "执行间隔（分钟）",
+  "auto.windowStart": "开始时段（整点）",
+  "auto.windowEnd": "结束时段（整点）",
+  "auto.windowHelp": "自动选课只在所选时段内执行：开始 9、结束 24 表示早上 9 点到晚上 12 点。两端相同表示全天，也可跨零点（如开始 22、结束 2）。",
+  "auto.window": "时段",
+  "auto.outsideWindow": "当前不在时段内",
   "auto.runNow": "立即执行一轮",
   "auto.clearLog": "清空日志",
   "auto.stateOn": "自动选课运行中",
@@ -107,5 +112,7 @@
   "notify.expiredBody": "**检测时间**：{time}\n\n**失效原因**：{reason}\n\n请打开 {url} 重新粘贴 Cookie 并点击「连接」。\n\n> 每次失效只推送一条，重新连接成功后自动重置。",
   "notify.testTitle": "学术报告系统：推送测试",
   "notify.testBody": "收到这条消息说明 Server酱 推送配置正常，Cookie 失效时会通过这里提醒你。",
+  "notify.enrollTitle": "学术报告系统：选课成功",
+  "notify.enrollBody": "**选课时间**：{time}\n\n**本次选中 {count} 门报告**：\n\n{items}\n\n详情见 {url}",
   "footer.note": "数据来源于研究生平台，仅作本地查询与管理使用。"
 }

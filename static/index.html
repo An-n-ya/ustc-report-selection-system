@@ -56,15 +56,17 @@
     <div class="stat"><span class="stat-value" id="statDepts">--</span><span class="stat-label" data-i18n="stats.depts">Departments</span></div>
   </section>
 
-  <section class="card panel">
+  <section class="card panel" id="autoPanel">
     <div class="card-head">
       <h2 data-i18n="auto.title">Auto enroll</h2>
-      <label class="checkbox auto-toggle">
+      <label class="switch">
         <input type="checkbox" id="autoEnabled">
-        <span data-i18n="auto.enable">Enable</span>
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-label" data-i18n="auto.enable">Enable</span>
       </label>
     </div>
     <p class="hint" data-i18n="auto.help">Runs on a timer and selects open reports for you.</p>
+    <p class="hint muted" data-i18n="auto.windowHelp">Passes only run inside the chosen hours.</p>
     <div class="auto-grid">
       <div class="filter-item">
         <label class="field-label" for="autoTarget" data-i18n="auto.target">Stop at (reports)</label>
@@ -74,12 +76,20 @@
         <label class="field-label" for="autoInterval" data-i18n="auto.interval">Every (minutes)</label>
         <input type="number" id="autoInterval" min="1" max="1440" step="1">
       </div>
+      <div class="filter-item">
+        <label class="field-label" for="autoWindowStart" data-i18n="auto.windowStart">Window start (hour)</label>
+        <input type="number" id="autoWindowStart" min="0" max="24" step="1">
+      </div>
+      <div class="filter-item">
+        <label class="field-label" for="autoWindowEnd" data-i18n="auto.windowEnd">Window end (hour)</label>
+        <input type="number" id="autoWindowEnd" min="0" max="24" step="1">
+      </div>
       <div class="filter-item auto-actions">
         <button class="btn ghost" id="autoRun" data-i18n="auto.runNow">Run one pass now</button>
         <button class="btn ghost" id="autoClear" data-i18n="auto.clearLog">Clear log</button>
       </div>
     </div>
-    <p class="auto-status" id="autoStatus"></p>
+    <div class="auto-summary" id="autoSummary"></div>
     <div class="auto-log" id="autoLog"></div>
   </section>
 

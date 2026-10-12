@@ -1,9 +1,11 @@
-"""Hourly worker that enrolls in open academic reports on the student's behalf.
+"""Background worker that enrolls in open academic reports on the student's behalf.
 
 A pass only considers reports that the portal already marks as selectable and
 that still have seats left, and it stops once the account holds the configured
-number of reports. Every pass appends to a rolling log that the web UI shows,
-so the student can always see what was taken and what was refused.
+number of reports. Passes are confined to a daily window so the worker only
+touches the school system during the hours the student picked. Every pass
+appends to a rolling log that the web UI shows, so the student can always see
+what was taken and what was refused.
 """
 
 from __future__ import annotations
@@ -19,11 +21,18 @@ DEFAULT_INTERVAL_MINUTES = 60
 DEFAULT_TARGET = 10
 MIN_INTERVAL_MINUTES = 1
 MAX_INTERVAL_MINUTES = 1440
+DEFAULT_WINDOW_START_HOUR = 0
+DEFAULT_WINDOW_END_HOUR = 24
+MAX_WINDOW_HOUR = 24
 LOG_LIMIT = 200
 LOG_TAIL = 40
 POLL_SECONDS = 5
 ENROLL_DELAY_SECONDS = 1.5
 COMPUTER_DEPT_SET = frozenset(COMPUTER_DEPT_CODES)
+
+
+def _clock(when: float) -> str:
+    return time.strftime("%m-%d %H:%M", time.localtime(when))
 
 
 def has_seats(row: dict) -> bool:
@@ -49,6 +58,8 @@ class AutoEnroller:
         self.enabled = False
         self.interval_minutes = DEFAULT_INTERVAL_MINUTES
         self.target = DEFAULT_TARGET
+        self.window_start = DEFAULT_WINDOW_START_HOUR
+        self.window_end = DEFAULT_WINDOW_END_HOUR
         self.entries = []
         self.last_run = 0.0
         self.next_run = 0.0
@@ -70,6 +81,12 @@ class AutoEnroller:
             payload.get("intervalMinutes") or DEFAULT_INTERVAL_MINUTES
         )
         self.target = max(1, int(payload.get("target") or DEFAULT_TARGET))
+        self.window_start = self._clamp_hour(
+            payload.get("windowStartHour"), DEFAULT_WINDOW_START_HOUR
+        )
+        self.window_end = self._clamp_hour(
+            payload.get("windowEndHour"), DEFAULT_WINDOW_END_HOUR
+        )
         self.entries = payload.get("entries") or []
         self.last_run = float(payload.get("lastRun") or 0)
         self.last_summary = payload.get("lastSummary") or ""
@@ -83,6 +100,8 @@ class AutoEnroller:
             "enabled": self.enabled,
             "intervalMinutes": self.interval_minutes,
             "target": self.target,
+            "windowStartHour": self.window_start,
+            "windowEndHour": self.window_end,
             "lastRun": self.last_run,
             "lastSummary": self.last_summary,
             "entries": self.entries[-LOG_LIMIT:],
@@ -101,6 +120,51 @@ class AutoEnroller:
             return DEFAULT_INTERVAL_MINUTES
         return max(MIN_INTERVAL_MINUTES, min(MAX_INTERVAL_MINUTES, minutes))
 
+    # ------------------------------------------------------------------ window
+
+    @staticmethod
+    def _clamp_hour(value, fallback: int) -> int:
+        try:
+            hour = int(value)
+        except (TypeError, ValueError):
+            return fallback
+        return max(0, min(MAX_WINDOW_HOUR, hour))
+
+    def _always_open(self) -> bool:
+        return self.window_start == self.window_end
+
+    def _hour_in_window(self, hour: int) -> bool:
+        start, end = self.window_start, self.window_end
+        if start == end:
+            # Equal bounds mean "no restriction" rather than "never runs".
+            return True
+        if start < end:
+            return start <= hour < end
+        # The window wraps past midnight, e.g. 22 -> 2.
+        return hour >= start or hour < end
+
+    def _is_open(self, when: float) -> bool:
+        return self._hour_in_window(time.localtime(when).tm_hour)
+
+    def _clamp_to_window(self, when: float) -> float:
+        """Push a moment forward to the next hour the window is open.
+
+        Walks hour by hour instead of doing date arithmetic, so a window that
+        wraps past midnight needs no special casing.
+        """
+        if self._always_open() or self._is_open(when):
+            return when
+        probe = when
+        for _ in range(MAX_WINDOW_HOUR + 1):
+            local = time.localtime(probe)
+            probe += 3600 - local.tm_min * 60 - local.tm_sec
+            if self._is_open(probe):
+                return probe
+        return probe
+
+    def _window_label(self) -> str:
+        return "%02d:00-%02d:00" % (self.window_start, self.window_end)
+
     # ------------------------------------------------------------------ thread
 
     def start(self) -> None:
@@ -115,7 +179,13 @@ class AutoEnroller:
     def _loop(self) -> None:
         while not self._stop.wait(POLL_SECONDS):
             with self.lock:
-                due = self.enabled and self.next_run and time.time() >= self.next_run
+                now = time.time()
+                due = (
+                    self.enabled
+                    and self.next_run
+                    and now >= self.next_run
+                    and self._is_open(now)
+                )
             if not due:
                 continue
             try:
@@ -134,6 +204,9 @@ class AutoEnroller:
                 "enabled": self.enabled,
                 "intervalMinutes": self.interval_minutes,
                 "target": self.target,
+                "windowStartHour": self.window_start,
+                "windowEndHour": self.window_end,
+                "inWindow": self._is_open(time.time()),
                 "running": self.running,
                 "lastRun": self.last_run,
                 "nextRun": self.next_run,
@@ -144,27 +217,51 @@ class AutoEnroller:
     def configure(self, payload: dict) -> dict:
         with self.lock:
             was_enabled = self.enabled
-            interval_changed = False
+            reschedule = False
             if "target" in payload:
                 self.target = max(1, int(payload["target"]))
             if "intervalMinutes" in payload:
                 new_interval = self._clamp_interval(payload["intervalMinutes"])
-                interval_changed = new_interval != self.interval_minutes
-                self.interval_minutes = new_interval
+                if new_interval != self.interval_minutes:
+                    self.interval_minutes = new_interval
+                    reschedule = True
+            if "windowStartHour" in payload:
+                new_start = self._clamp_hour(
+                    payload["windowStartHour"], DEFAULT_WINDOW_START_HOUR
+                )
+                if new_start != self.window_start:
+                    self.window_start = new_start
+                    reschedule = True
+            if "windowEndHour" in payload:
+                new_end = self._clamp_hour(
+                    payload["windowEndHour"], DEFAULT_WINDOW_END_HOUR
+                )
+                if new_end != self.window_end:
+                    self.window_end = new_end
+                    reschedule = True
             if "enabled" in payload:
                 self.enabled = bool(payload["enabled"])
 
             if self.enabled and not was_enabled:
-                # Give the student one full interval to change their mind before
-                # anything is written to the school system.
-                self.next_run = time.time() + self.interval_minutes * 60
+                # Give the student one full interval to change their mind, but
+                # never fire outside the window they picked.
+                self.next_run = self._clamp_to_window(
+                    time.time() + self.interval_minutes * 60
+                )
                 self._record(
                     "info",
-                    "auto enroll armed, first pass in %d min" % self.interval_minutes,
+                    "auto enroll armed for %s, next pass %s"
+                    % (self._window_label(), _clock(self.next_run)),
                 )
-            elif self.enabled and interval_changed:
-                self.next_run = time.time() + self.interval_minutes * 60
-                self._record("info", "interval now %d min" % self.interval_minutes)
+            elif self.enabled and reschedule:
+                self.next_run = self._clamp_to_window(
+                    time.time() + self.interval_minutes * 60
+                )
+                self._record(
+                    "info",
+                    "settings now %d min within %s, next pass %s"
+                    % (self.interval_minutes, self._window_label(), _clock(self.next_run)),
+                )
             elif not self.enabled and was_enabled:
                 self.next_run = 0.0
                 self._record("info", "auto enroll paused")
@@ -192,7 +289,9 @@ class AutoEnroller:
                 self.running = False
                 self.last_run = time.time()
                 self.next_run = (
-                    self.last_run + self.interval_minutes * 60 if self.enabled else 0.0
+                    self._clamp_to_window(self.last_run + self.interval_minutes * 60)
+                    if self.enabled
+                    else 0.0
                 )
                 self.save()
         return result
@@ -270,6 +369,8 @@ class AutoEnroller:
                 store.refresh()
             except UstcApiError as exc:
                 self._record("error", "refresh after enrolling failed: %s" % exc)
+            # One push per pass: a burst of sign ups costs a single message.
+            store.notify_enrolled([item["title"] for item in enrolled])
 
         total = len(held) + len(enrolled)
         summary = "found %d candidate(s), enrolled %d, refused %d, holding %d/%d" % (
