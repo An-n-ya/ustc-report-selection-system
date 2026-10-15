@@ -448,6 +448,22 @@ class Store:
         if titles:
             self.notifier.alert_enrolled(titles)
 
+    def notify_enroll_failed(self, failures) -> None:
+        """Push one message about reports that refused to be taken.
+
+        ``failures`` holds ``(title, reason)`` pairs; the notifier batches them
+        into a single message and de-duplicates an unchanged batch.
+        """
+        if not self.notifier:
+            return
+        failures = [
+            (title, reason)
+            for title, reason in failures
+            if title
+        ]
+        if failures:
+            self.notifier.alert_enroll_failed(failures)
+
 
 COOKIECLOUD = CookieCloudClient.from_env()
 NOTIFIER = ServerChanNotifier(NOTIFY_FILE)
@@ -588,10 +604,23 @@ class Handler(BaseHTTPRequestHandler):
                 if not bgbm:
                     self._error("missing bgbm")
                     return
-                ok, message = STORE.enroll(bgbm)
+                try:
+                    ok, message = STORE.enroll(bgbm)
+                except SessionExpiredError:
+                    # An expired cookie already raises its own push.
+                    raise
+                except UstcApiError as exc:
+                    # The portal answered with an error instead of a refusal;
+                    # report it the same way, then let the usual handler reply.
+                    STORE.notify_enroll_failed([(STORE.report_title(bgbm), str(exc))])
+                    raise
                 if ok:
                     STORE.refresh()
                     STORE.notify_enrolled([STORE.report_title(bgbm)])
+                else:
+                    STORE.notify_enroll_failed(
+                        [(STORE.report_title(bgbm), message or "refused")]
+                    )
                 self._json({"ok": ok, "message": message, "status": STORE.status()})
             elif route == "/api/drop":
                 bgbm = payload.get("bgbm") or ""

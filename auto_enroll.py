@@ -5,7 +5,9 @@ that still have seats left, and it stops once the account holds the configured
 number of reports. Passes are confined to a daily window so the worker only
 touches the school system during the hours the student picked. Every pass
 appends to a rolling log that the web UI shows, so the student can always see
-what was taken and what was refused.
+what was taken and what was refused. Refusals are additionally pushed through
+Server酱, batched per pass and de-duplicated, so a report that keeps refusing
+does not turn into a message every interval.
 """
 
 from __future__ import annotations
@@ -353,7 +355,7 @@ class AutoEnroller:
                 self._pause("session expired mid pass: %s" % exc)
                 break
             except UstcApiError as exc:
-                refused.append(item)
+                refused.append((item, str(exc)))
                 self._record("refused", "%s -> %s" % (item["title"], exc))
                 continue
             if ok:
@@ -361,7 +363,7 @@ class AutoEnroller:
                 self._record("enrolled", "%s [%s]" % (item["title"], item["bgbm"]))
                 time.sleep(ENROLL_DELAY_SECONDS)
             else:
-                refused.append(item)
+                refused.append((item, message or "rejected"))
                 self._record("refused", "%s -> %s" % (item["title"], message or "rejected"))
 
         if enrolled:
@@ -371,6 +373,13 @@ class AutoEnroller:
                 self._record("error", "refresh after enrolling failed: %s" % exc)
             # One push per pass: a burst of sign ups costs a single message.
             store.notify_enrolled([item["title"] for item in enrolled])
+
+        if refused:
+            # Batched like the success push, and de-duplicated by the notifier so
+            # a report that keeps refusing does not push on every pass.
+            store.notify_enroll_failed(
+                [(item["title"], reason) for item, reason in refused]
+            )
 
         total = len(held) + len(enrolled)
         summary = "found %d candidate(s), enrolled %d, refused %d, holding %d/%d" % (

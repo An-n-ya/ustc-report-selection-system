@@ -11,6 +11,12 @@ is worth a message, so one push is sent per batch. The auto enrol worker hands
 over a whole pass at once, which keeps a burst of sign ups from burning through
 the daily ServerChan quota.
 
+Failed sign ups are reported too, otherwise a report that quietly refuses the
+student leaves no trace outside the local log. Those messages are batched per
+attempt and de-duplicated by the set of failures, because the worker retries the
+same reports on every pass: an unchanged refusal only pushes once, and a later
+successful sign up clears the memory so a fresh failure alerts again.
+
 Credentials and de-duplication state share a single JSON file under data/, so
 restarting the process does not turn one expiry into a stream of repeats.
 User facing copy lives in i18n/zh.json rather than in this file.
@@ -74,6 +80,9 @@ class ServerChanNotifier:
         self.last_error = ""
         self.last_enroll_at = 0.0
         self.last_enroll_result = ""
+        self.last_enroll_fail_at = 0.0
+        self.last_enroll_fail_result = ""
+        self._enroll_fail_signature = ""
         self._sending = False
         self.load()
 
@@ -97,6 +106,9 @@ class ServerChanNotifier:
         self.last_error = payload.get("lastError") or ""
         self.last_enroll_at = float(payload.get("lastEnrollAt") or 0)
         self.last_enroll_result = payload.get("lastEnrollResult") or ""
+        self.last_enroll_fail_at = float(payload.get("lastEnrollFailAt") or 0)
+        self.last_enroll_fail_result = payload.get("lastEnrollFailResult") or ""
+        self._enroll_fail_signature = payload.get("enrollFailSignature") or ""
         override = (os.environ.get(SENDKEY_ENV) or "").strip()
         if override:
             self.sendkey = override
@@ -113,6 +125,9 @@ class ServerChanNotifier:
             "lastError": self.last_error,
             "lastEnrollAt": self.last_enroll_at,
             "lastEnrollResult": self.last_enroll_result,
+            "lastEnrollFailAt": self.last_enroll_fail_at,
+            "lastEnrollFailResult": self.last_enroll_fail_result,
+            "enrollFailSignature": self._enroll_fail_signature,
         }
         directory = os.path.dirname(self.path)
         if directory:
@@ -260,6 +275,69 @@ class ServerChanNotifier:
         with self.lock:
             self.last_enroll_at = time.time()
             self.last_enroll_result = detail
+            if ok:
+                # A sign up went through, so the state the previous failure
+                # described no longer holds: let the same refusal alert again.
+                self._enroll_fail_signature = ""
+            self.save()
+
+    def alert_enroll_failed(self, failures) -> bool:
+        """Queue one push naming the reports this attempt could not take.
+
+        ``failures`` is an iterable of ``(title, reason)`` pairs and is sent as
+        a single message, so a pass that hits several refusals still costs one
+        ServerChan push. The batch is de-duplicated by its exact contents: as
+        long as the same reports keep failing with the same reasons, only the
+        first push goes out, which keeps the auto enrol worker from repeating
+        the message on every interval.
+        """
+        cleaned = []
+        for item in failures:
+            try:
+                name, reason = item
+            except (TypeError, ValueError):
+                continue
+            name = str(name or "").strip()
+            if not name:
+                continue
+            cleaned.append((name, str(reason or "").strip()))
+        if not cleaned:
+            return False
+        signature = json.dumps(sorted(cleaned), ensure_ascii=False)
+        with self.lock:
+            if not self.enabled or not self.sendkey:
+                return False
+            if signature == self._enroll_fail_signature:
+                return False
+        threading.Thread(
+            target=self._enroll_failed_worker,
+            args=(cleaned, signature),
+            name="notify-enroll-failed",
+            daemon=True,
+        ).start()
+        return True
+
+    def _enroll_failed_worker(self, failures, signature) -> None:
+        texts = _texts()
+        title = texts.get("notify.enrollFailTitle") or "Enrolling failed"
+        template = texts.get("notify.enrollFailBody") or (
+            "Failed to enroll {count} report(s) at {time}.\n\n{items}\n\nOpen {url}."
+        )
+        body = template.format(
+            time=_stamp(),
+            count=len(failures),
+            items="\n".join(
+                "- %s -> %s" % (name, reason or "-") for name, reason in failures
+            ),
+            url=self.site_url,
+        )
+        ok, detail = self.send(title, body)
+        with self.lock:
+            self.last_enroll_fail_at = time.time()
+            self.last_enroll_fail_result = detail
+            if ok:
+                self._enroll_fail_signature = signature
+            # On failure the memory stays empty, so the next pass retries.
             self.save()
 
     def status(self) -> dict:
@@ -275,6 +353,8 @@ class ServerChanNotifier:
                 "lastError": self.last_error,
                 "lastEnrollAt": self.last_enroll_at,
                 "lastEnrollResult": self.last_enroll_result,
+                "lastEnrollFailAt": self.last_enroll_fail_at,
+                "lastEnrollFailResult": self.last_enroll_fail_result,
             }
 
 

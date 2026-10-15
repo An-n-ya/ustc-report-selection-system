@@ -8,7 +8,7 @@
 - 选课（选报告）
 - 退课（退报告）
 - 自动选课（定时查找「状态可选且人数未满」的报告并自动选课，可限定每日时段）
-- 选课成功通过 Server酱 推送提醒
+- 选课成功 / 选课失败都通过 Server酱 推送提醒
 
 零第三方依赖，只用 Python 标准库。
 
@@ -113,7 +113,8 @@ Cookie 是有时限的，失效后所有接口都会返回 401。程序会在两
 | `siteUrl` | 推送正文里附上的地址，默认 `https://report.annya.work/` |
 
 该文件同时保存运行时状态（`lastAlertAt` / `lastResult` / `lastError` 为失效提醒状态，
-`lastEnrollAt` / `lastEnrollResult` 为选课通知状态），无需手工编辑。
+`lastEnrollAt` / `lastEnrollResult` 为选课成功通知状态，`lastEnrollFailAt` /
+`lastEnrollFailResult` / `enrollFailSignature` 为选课失败通知状态），无需手工编辑。
 
 该文件已加入 `.gitignore`，SendKey 不会被提交到仓库。推送文案（标题与正文模板）放在
 `i18n/zh.json` 的 `notify.*` 键下，正文支持 Markdown，可用 `{time}`、`{reason}`、`{url}`
@@ -152,6 +153,24 @@ CookieCloud 拉一份新 Cookie 重连，只有恢复失败才推送提醒，所
 `data/notify.json` 的 `lastEnrollAt` / `lastEnrollResult` 字段，可通过 `/api/notify` 查看。
 文案模板是 `i18n/zh.json` 里的 `notify.enrollTitle` 与 `notify.enrollBody`，
 正文可用 `{time}`、`{count}`、`{items}`、`{url}` 占位符。
+
+### 选课失败通知
+
+选课失败同样会推送一条消息，避免失败只留在本地日志里：
+
+- 页面上手动点「选课」被拒绝（或被平台报错）时推送一门；
+- 自动选课每轮结束后，把本轮被拒绝的报告合并成**一条**推送，正文列出题目与失败原因；
+- 与成功通知一样按批合并，一次多门失败只花一条消息额度。
+
+唯一的例外是 Cookie 失效：它走上面的失效提醒，不会重复推送一条「选课失败」。
+
+与成功通知相反，失败通知**按内容去重**：若若干门报告一直以同样的原因失败（自动选课每轮
+都会重试它们），只在第一次推送，之后保持安静；一旦有任意一门选课成功，记忆即被清空，
+同样的失败再次出现时会重新提醒。
+
+文案模板是 `i18n/zh.json` 里的 `notify.enrollFailTitle` 与 `notify.enrollFailBody`，
+正文可用 `{time}`、`{count}`、`{items}`、`{url}` 占位符；状态记录在 `data/notify.json`
+的 `lastEnrollFailAt` / `lastEnrollFailResult` 字段，可通过 `/api/notify` 查看。
 
 ## 从 CookieCloud 自动获取 Cookie
 
