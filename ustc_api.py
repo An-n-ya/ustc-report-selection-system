@@ -315,6 +315,7 @@ class UstcReportClient:
         request.add_header("Accept", "application/json, text/javascript, */*; q=0.01")
         request.add_header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         request.add_header("User-Agent", USER_AGENT)
+        request.add_header("Origin", "https://" + HOST)
         request.add_header("Referer", "%s/sys/%s/*default/index.do" % (BASE_URL, APP_NAME))
         try:
             with self.opener.open(request, timeout=self.timeout) as response:
@@ -405,7 +406,10 @@ class UstcReportClient:
     # ------------------------------------------------------------------ mutation
 
     def enroll(self, bgbm: str) -> tuple:
-        return self._outcome(self._request(SELECT_PATH.format(app=APP_NAME), {"BGBM": bgbm}))
+        # This controller expects JSON inside the form's `data` field, unlike
+        # the EMAP list/detail actions that accept individual form fields.
+        payload = {"data": json.dumps({"BGBM": bgbm}, separators=(",", ":"))}
+        return self._outcome(self._request(SELECT_PATH.format(app=APP_NAME), payload))
 
     def drop(self, bgbm: str) -> tuple:
         return self._outcome(self._request(CANCEL_PATH.format(app=APP_NAME), {"BGBM": bgbm}))
